@@ -1,141 +1,147 @@
 const express = require("express");
+const crypto = require("crypto");
 
 const app = express();
 
 app.use(express.json());
 
-const RAZORPAY_KEY_ID = process.env.RAZORPAY_KEY_ID;
-const RAZORPAY_KEY_SECRET = process.env.RAZORPAY_KEY_SECRET;
+const KEY_ID = process.env.RAZORPAY_KEY_ID;
+const KEY_SECRET = process.env.RAZORPAY_KEY_SECRET;
 
-if (!RAZORPAY_KEY_ID || !RAZORPAY_KEY_SECRET) {
-    console.error("Razorpay API keys are missing");
-}
-
-// Home
+// Home page
 app.get("/", (req, res) => {
-    res.send("Kannada Exam Master Backend is running");
+  res.send(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Kannada Exam Master</title>
+    </head>
+    <body style="font-family:Arial;text-align:center;padding:40px">
+      <h1>📚 Kannada Exam Master</h1>
+      <p>Premium Competitive Exam App</p>
+      <p>₹99 Premium Unlock</p>
+    </body>
+    </html>
+  `);
 });
 
 // Health check
 app.get("/health", (req, res) => {
-    res.json({
-        status: "ok"
-    });
+  res.json({ status: "ok" });
 });
 
-// Create ₹99 Razorpay Order
+// Create Razorpay Order
 app.post("/create-order", async (req, res) => {
-    try {
-        const amount = 9900; // ₹99
-
-        const auth = Buffer
-            .from(`${RAZORPAY_KEY_ID}:${RAZORPAY_KEY_SECRET}`)
-            .toString("base64");
-
-        const response = await fetch(
-            "https://api.razorpay.com/v1/orders",
-            {
-                method: "POST",
-                headers: {
-                    "Authorization": `Basic ${auth}`,
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify({
-                    amount: amount,
-                    currency: "INR",
-                    receipt: `KEM_${Date.now()}`,
-                    notes: {
-                        product: "Kannada Exam Master Premium"
-                    }
-                })
-            }
-        );
-
-        const data = await response.json();
-
-        if (!response.ok) {
-            return res.status(400).json({
-                success: false,
-                error: data
-            });
-        }
-
-        res.json({
-            success: true,
-            orderId: data.id,
-            amount: data.amount,
-            currency: data.currency,
-            keyId: RAZORPAY_KEY_ID
-        });
-
-    } catch (error) {
-        console.error(error);
-
-        res.status(500).json({
-            success: false,
-            error: "Unable to create payment order"
-        });
+  try {
+    if (!KEY_ID || !KEY_SECRET) {
+      return res.status(500).json({
+        success: false,
+        message: "Razorpay keys are missing"
+      });
     }
+
+    const auth = Buffer.from(`${KEY_ID}:${KEY_SECRET}`).toString("base64");
+
+    const response = await fetch("https://api.razorpay.com/v1/orders", {
+      method: "POST",
+      headers: {
+        "Authorization": `Basic ${auth}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        amount: 9900,
+        currency: "INR",
+        receipt: `KEM_${Date.now()}`,
+        notes: {
+          product: "Kannada Exam Master Premium"
+        }
+      })
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        success: false,
+        message: data.error?.description || "Order creation failed"
+      });
+    }
+
+    res.json({
+      success: true,
+      order_id: data.id,
+      amount: data.amount,
+      key_id: KEY_ID
+    });
+
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      success: false,
+      message: "Server error"
+    });
+  }
 });
 
-// Verify Razorpay payment
-app.post("/verify-payment", async (req, res) => {
-    try {
-        const crypto = require("crypto");
+// Verify Razorpay Payment
+app.post("/verify-payment", (req, res) => {
+  try {
+    const {
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature
+    } = req.body;
 
-        const {
-            razorpay_order_id,
-            razorpay_payment_id,
-            razorpay_signature
-        } = req.body;
-
-        if (
-            !razorpay_order_id ||
-            !razorpay_payment_id ||
-            !razorpay_signature
-        ) {
-            return res.status(400).json({
-                success: false,
-                error: "Missing payment details"
-            });
-        }
-
-        const generatedSignature = crypto
-            .createHmac("sha256", RAZORPAY_KEY_SECRET)
-            .update(
-                `${razorpay_order_id}|${razorpay_payment_id}`
-            )
-            .digest("hex");
-
-        const verified =
-            generatedSignature === razorpay_signature;
-
-        if (!verified) {
-            return res.status(400).json({
-                success: false,
-                verified: false
-            });
-        }
-
-        res.json({
-            success: true,
-            verified: true,
-            premium: true,
-            message: "Payment verified successfully"
-        });
-
-    } catch (error) {
-        console.error(error);
-
-        res.status(500).json({
-            success: false,
-            error: "Payment verification failed"
-        });
+    if (
+      !razorpay_order_id ||
+      !razorpay_payment_id ||
+      !razorpay_signature
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Payment details missing"
+      });
     }
+
+    const generatedSignature = crypto
+      .createHmac("sha256", KEY_SECRET)
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+      .digest("hex");
+
+    const valid = crypto.timingSafeEqual(
+      Buffer.from(generatedSignature),
+      Buffer.from(razorpay_signature)
+    );
+
+    if (!valid) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid payment signature"
+      });
+    }
+
+    console.log("PAYMENT VERIFIED:", razorpay_payment_id);
+
+    res.json({
+      success: true,
+      premium: true,
+      message: "Payment verified successfully"
+    });
+
+  } catch (error) {
+    console.error(error);
+
+    res.status(500).json({
+      success: false,
+      message: "Verification failed"
+    });
+  }
 });
 
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on port ${PORT}`);
+  console.log("Kannada Exam Master Backend is running");
 });
